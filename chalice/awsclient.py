@@ -25,7 +25,13 @@ import re
 import uuid
 from collections import OrderedDict
 from typing import Any, Optional, Dict, Callable, List, Iterator, Iterable, \
-    Sequence, IO  # noqa
+    Sequence, IO, Union  # noqa
+try:
+    # Python 3
+    from itertools import zip_longest      # type: ignore
+except ImportError:
+    # Python 2
+    from itertools import izip_longest as zip_longest
 
 import botocore.session  # noqa
 from botocore.loaders import create_loader
@@ -44,6 +50,7 @@ from chalice.vendored.botocore.regions import EndpointResolver
 StrMap = Optional[Dict[str, str]]
 StrAnyMap = Dict[str, Any]
 OptStr = Optional[str]
+OptListStr = Optional[Union[List[str], str]]
 OptInt = Optional[int]
 OptStrList = Optional[List[str]]
 ClientMethod = Callable[..., Dict[str, Any]]
@@ -1370,9 +1377,10 @@ class TypedAWSClient(object):
             service_name='events',
         )
 
-    def connect_s3_bucket_to_lambda(self, bucket, function_arn, events,
-                                    prefix=None, suffix=None):
-        # type: (str, str, List[str], OptStr, OptStr) -> None
+    def connect_s3_bucket_to_lambda(
+            self, bucket, function_arn, events, prefix=None, suffix=None
+    ):
+        # type: (str, str, List[str], OptListStr, OptListStr) -> None
         """Configure S3 bucket to invoke a lambda function.
 
         The S3 bucket must already have permission to invoke the
@@ -1382,59 +1390,73 @@ class TypedAWSClient(object):
         ``events`` param matches the event strings supported by the
         service.
 
-        This method also only supports a single prefix/suffix for now,
-        which is what's offered in the Lambda console.
-
+        This method also supports single or multiple prefix/suffix
         """
-        s3 = self._client('s3')
+        s3 = self._client("s3")
         existing_config = s3.get_bucket_notification_configuration(
             Bucket=bucket)
         # Because we're going to PUT this config back to S3, we need
         # to remove `ResponseMetadata` because that's added in botocore
         # and isn't a param of the put_bucket_notification_configuration.
-        existing_config.pop('ResponseMetadata', None)
+        existing_config.pop("ResponseMetadata", None)
         existing_lambda_config = existing_config.get(
-            'LambdaFunctionConfigurations', [])
-        single_config = {
-            'LambdaFunctionArn': function_arn, 'Events': events
-        }  # type: Dict[str, Any]
-        filter_rules = []
-        if prefix is not None:
-            filter_rules.append({'Name': 'Prefix', 'Value': prefix})
-        if suffix is not None:
-            filter_rules.append({'Name': 'Suffix', 'Value': suffix})
-        if filter_rules:
-            single_config['Filter'] = {'Key': {'FilterRules': filter_rules}}
-        new_config = self._merge_s3_notification_config(existing_lambda_config,
-                                                        single_config)
-        existing_config['LambdaFunctionConfigurations'] = new_config
+            "LambdaFunctionConfigurations", [])
+        existing_lambda_config = self._remove_matching_lambda_arn_config(
+            existing_lambda_config, function_arn
+        )
+        additional_config = [
+            {"LambdaFunctionArn": function_arn, "Events": events}
+        ]  # type: List[Dict[str, Any]]
+
+        if prefix or suffix:
+            additional_config = []
+            for filter_rule in self._get_filter_rules(prefix, suffix):
+                additional_config.append(
+                    {
+                        "LambdaFunctionArn": function_arn,
+                        "Events": events,
+                        "Filter": {"Key": {"FilterRules": filter_rule}},
+                    }
+                )
+        existing_config["LambdaFunctionConfigurations"] = (
+            existing_lambda_config + additional_config
+        )
         s3.put_bucket_notification_configuration(
-            Bucket=bucket,
-            NotificationConfiguration=existing_config,
+            Bucket=bucket, NotificationConfiguration=existing_config,
         )
 
-    def _merge_s3_notification_config(self, existing_config, new_config):
-        # type: (List[Dict[str, Any]], Dict[str, Any]) -> List[Dict[str, Any]]
-        # Add the new_config to the existing_config.
-        # We have to handle two cases:
-        # 1. There's an existing config associated with the lambda arn.
-        #    In this case we replace the specific lambda config with the
-        #    new_config.
-        # 2. The new_config isn't part of the existing_config.  In
-        #    this case we just add it to the end of the existing config.
-        final_config = []
-        added_config = False
+    def _get_filter_rules(self, prefix, suffix):
+        # type: (OptListStr, OptListStr) -> List[List[Dict[str, str]]]
+        filter_rules = []
+
+        if not prefix or isinstance(prefix, str):
+            prefix = [prefix]   # type: ignore
+        if not suffix or isinstance(suffix, str):
+            suffix = [suffix]   # type: ignore
+
+        for p, s in zip_longest(prefix, suffix):
+            filter_rules.append(self._get_filter_rule(p, s))
+        return filter_rules
+
+    def _get_filter_rule(self, prefix, suffix):
+        # type: (str, str) -> List[Dict[str, str]]
+        if prefix and suffix:
+            return [
+                {"Name": "Prefix", "Value": prefix},
+                {"Name": "Suffix", "Value": suffix},
+            ]
+        if prefix:
+            return [{"Name": "Prefix", "Value": prefix}]
+        else:
+            return [{"Name": "Suffix", "Value": suffix}]
+
+    def _remove_matching_lambda_arn_config(self, existing_config,
+                                           function_arn):
+        # type: (List[Dict[str, Any]], str) -> List[Dict[str, Any]]
         for config in existing_config:
-            if config['LambdaFunctionArn'] != new_config['LambdaFunctionArn']:
-                final_config.append(config)
-            else:
-                # Case 1, replace the existing config.
-                final_config.append(new_config)
-                added_config = True
-        if not added_config:
-            # Case 2, add it to the end of the existing list of configs.
-            final_config.append(new_config)
-        return final_config
+            if config["LambdaFunctionArn"] == function_arn:
+                existing_config.remove(config)
+        return existing_config
 
     def add_permission_for_s3_event(self, bucket, function_arn):
         # type: (str, str) -> None

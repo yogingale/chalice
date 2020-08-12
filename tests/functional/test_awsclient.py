@@ -3020,7 +3020,7 @@ def test_can_connect_bucket_to_lambda_new_config(stubbed_session):
     stubbed_session.verify_stubs()
 
 
-def test_can_connect_bucket_with_prefix_and_suffix(stubbed_session):
+def test_can_connect_bucket_with_str_prefix_and_suffix(stubbed_session):
     s3 = stubbed_session.stub('s3')
     s3.get_bucket_notification_configuration(Bucket='mybucket').returns({})
     s3.put_bucket_notification_configuration(
@@ -3052,6 +3052,88 @@ def test_can_connect_bucket_with_prefix_and_suffix(stubbed_session):
     awsclient.connect_s3_bucket_to_lambda(
         'mybucket', 'function-arn', ['s3:ObjectCreated:*'],
         prefix='images/', suffix='.jpg',
+    )
+    stubbed_session.verify_stubs()
+
+
+def test_connect_bucket_with_str_and_iter_prefix_and_suffix(stubbed_session):
+    s3 = stubbed_session.stub('s3')
+    s3.get_bucket_notification_configuration(Bucket='mybucket').returns({})
+    s3.put_bucket_notification_configuration(
+        Bucket='mybucket',
+        NotificationConfiguration={
+            'LambdaFunctionConfigurations': [{
+                'LambdaFunctionArn': 'function-arn',
+                'Filter': {
+                    'Key': {
+                        'FilterRules': [
+                            {
+                                'Name': 'Prefix',
+                                'Value': 'images/'
+                            },
+                            {
+                                'Name': 'Suffix',
+                                'Value': '.jpg'
+                            }
+                        ]
+                    }
+                },
+                'Events': ['s3:ObjectCreated:*'],
+            }]
+        }
+    ).returns({})
+
+    stubbed_session.activate_stubs()
+    awsclient = TypedAWSClient(stubbed_session)
+    awsclient.connect_s3_bucket_to_lambda(
+        'mybucket', 'function-arn', ['s3:ObjectCreated:*'],
+        prefix=['images/'], suffix='.jpg',
+    )
+    stubbed_session.verify_stubs()
+
+
+def test_can_connect_bucket_with_iter_prefix_and_suffix(stubbed_session):
+    s3 = stubbed_session.stub("s3")
+    s3.get_bucket_notification_configuration(Bucket="mybucket").returns({})
+    s3.put_bucket_notification_configuration(
+        Bucket="mybucket",
+        NotificationConfiguration={
+            "LambdaFunctionConfigurations": [
+                {
+                    "LambdaFunctionArn": "function-arn",
+                    "Filter": {
+                        "Key": {
+                            "FilterRules": [
+                                {"Name": "Prefix", "Value": "images/"},
+                                {"Name": "Suffix", "Value": ".jpg"},
+                            ]
+                        }
+                    },
+                    "Events": ["s3:ObjectCreated:*"],
+                },
+                {
+                    "LambdaFunctionArn": "function-arn",
+                    "Filter": {
+                        "Key": {
+                            "FilterRules": [
+                                {"Name": "Suffix", "Value": ".png"}
+                            ]
+                        }
+                    },
+                    "Events": ["s3:ObjectCreated:*"],
+                },
+            ]
+        },
+    ).returns({})
+
+    stubbed_session.activate_stubs()
+    awsclient = TypedAWSClient(stubbed_session)
+    awsclient.connect_s3_bucket_to_lambda(
+        "mybucket",
+        "function-arn",
+        ["s3:ObjectCreated:*"],
+        prefix=["images/"],
+        suffix=[".jpg", ".png"],
     )
     stubbed_session.verify_stubs()
 
